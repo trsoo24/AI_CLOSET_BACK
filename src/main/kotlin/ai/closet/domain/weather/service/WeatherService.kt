@@ -1,144 +1,110 @@
 package ai.closet.domain.weather.service
 
 import ai.closet.domain.weather.dto.HourlyForecast
-import ai.closet.domain.weather.dto.KmaWeatherResponse
+import ai.closet.domain.weather.dto.WeatherApiResponse
 import ai.closet.domain.weather.dto.WeatherResponse
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.client.WebClient
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-import kotlin.math.floor
 
 @Service
 class WeatherService(
-    @Value("\${weather.kma.api-key}") private val apiKey: String,
-    @Value("\${weather.kma.base-url}") private val weatherUrl: String,
-    @Value("\${weather.kma.api-uri}") private val weatherUri: String
+    @Value("\${weather.api.api-key}") private val apiKey: String,
+    @Value("\${weather.api.base-url}") private val weatherUrl: String
 ) {
     private val webClient: WebClient = WebClient.builder()
         .baseUrl(weatherUrl)
         .build()
+
     /**
      * 위도/경도로 날씨 조회
      */
     fun getWeatherByCoordinates(latitude: Double, longitude: Double): WeatherResponse {
-        // 1. 위도/경도를 기상청 격자 좌표로 변환
-        val (nx, ny) = convertToGrid(latitude, longitude)
+        // WeatherAPI.com API 호출
+        val weatherData = fetchWeatherFromApi(latitude, longitude)
 
-        // 2. 기상청 API 호출
-        val kmaResponse = fetchWeatherFromKma(nx, ny)
-
-        // 3. 응답 데이터 파싱 및 가공
-        return parseWeatherResponse(kmaResponse, "서울특별시") // TODO: 역지오코딩으로 실제 지역명 얻기
+        // 응답 데이터 파싱 및 가공
+        return parseWeatherResponse(weatherData)
     }
 
     /**
-     * 기상청 API 호출
+     * WeatherAPI.com API 호출
+     * Forecast API를 사용하여 오늘의 시간별 예보 가져오기
      */
-    private fun fetchWeatherFromKma(nx: Int, ny: Int): KmaWeatherResponse {
-        val now = LocalDateTime.now()
-        val baseDateTime = getBaseDateTime(now)
-
+    private fun fetchWeatherFromApi(latitude: Double, longitude: Double): WeatherApiResponse {
         val response = webClient.get()
             .uri { uriBuilder ->
                 uriBuilder
-                    .path(weatherUri)
-                    .queryParam("pageNo", 1)
-                    .queryParam("numOfRows", 1000)
-                    .queryParam("dataType", "JSON")
-                    .queryParam("base_date", baseDateTime.first)
-                    .queryParam("base_time", baseDateTime.second)
-                    .queryParam("nx", nx)
-                    .queryParam("ny", ny)
-                    .queryParam("authKey", apiKey)
+                    .path("/forecast.json")
+                    .queryParam("key", apiKey)
+                    .queryParam("q", "$latitude,$longitude")
+                    .queryParam("days", 1)
+                    .queryParam("aqi", "no")
+                    .queryParam("alerts", "no")
                     .build()
             }
             .retrieve()
-            .bodyToMono(KmaWeatherResponse::class.java)
-            .block() ?: throw RuntimeException("기상청 API 호출 실패")
+            .bodyToMono(WeatherApiResponse::class.java)
+            .block() ?: throw RuntimeException("날씨 API 호출 실패")
 
         return response
     }
 
     /**
-     * 기상청 응답 데이터 파싱
+     * WeatherAPI.com 응답 데이터 파싱
      */
-    private fun parseWeatherResponse(kmaResponse: KmaWeatherResponse, location: String): WeatherResponse {
-        // null 체크
-        val items = kmaResponse.response?.body?.items?.item
-            ?: throw RuntimeException("기상청 API 응답 데이터가 올바르지 않습니다.")
+    private fun parseWeatherResponse(weatherData: WeatherApiResponse): WeatherResponse {
+        val location = weatherData.location ?: throw RuntimeException("위치 정보가 없습니다.")
+        val current = weatherData.current ?: throw RuntimeException("현재 날씨 정보가 없습니다.")
+        val forecast = weatherData.forecast?.forecastDay?.firstOrNull()
+            ?: throw RuntimeException("예보 정보가 없습니다.")
 
-        if (items.isEmpty()) {
-            throw RuntimeException("날씨 데이터가 없습니다. 좌표를 확인해주세요.")
-        }
+        // 위치 정보
+        val locationName = buildLocationName(location)
 
-        // 현재 시간대 데이터 추출
-        val now = LocalDateTime.now()
-        val currentHour = now.hour
+        // 현재 날씨 정보
+        val currentTemp = current.tempC ?: 0.0
+        val minTemp = forecast.day?.minTempC ?: 0.0
+        val maxTemp = forecast.day?.maxTempC ?: 0.0
 
-        val currentData = items
-            .filter { it.fcstTime == String.format("%02d00", currentHour) }
-            .mapNotNull { item ->
-                item.category?.let { category ->
-                    category to (item.fcstValue ?: "")
-                }
-            }
-            .toMap()
-
-        // 시간대별 예보 생성 (다음 6시간)
-        val hourlyForecasts = (0..5).map { hour ->
-            val targetHour = (currentHour + hour) % 24
-            val hourData = items
-                .filter { it.fcstTime == String.format("%02d00", targetHour) }
-                .mapNotNull { item ->
-                    item.category?.let { category ->
-                        category to (item.fcstValue ?: "")
-                    }
-                }
-                .toMap()
-
+        // 시간별 예보 - 오늘 00시부터 24시까지 (실제로는 23시까지)
+        val hourlyForecasts = forecast.hour?.map { hour ->
+            val time = hour.time?.substring(11, 16) ?: "00:00" // "2025-10-21 14:00" -> "14:00"
             HourlyForecast(
-                time = String.format("%02d:00", targetHour),
-                temperature = "${hourData["TMP"] ?: "-"}°C",
-                skyCondition = parseSkyCondition(hourData["SKY"] ?: "1"),
-                rainProbability = "${hourData["POP"] ?: "0"}%"
+                time = time,
+                temperature = "${hour.tempC ?: 0.0}°C",
+                skyCondition = hour.condition?.text ?: "알 수 없음",
+                rainProbability = "${hour.chanceOfRain ?: 0}%"
             )
-        }
-
-        // 최저/최고 기온 찾기
-        val temperatures = items
-            .filter { it.category == "TMP" }
-            .mapNotNull { it.fcstValue?.toDoubleOrNull() }
-
-        val minTemp = temperatures.minOrNull() ?: 0.0
-        val maxTemp = temperatures.maxOrNull() ?: 0.0
-        val currentTemp = currentData["TMP"]?.toDoubleOrNull() ?: 0.0
+        } ?: emptyList()
 
         return WeatherResponse(
-            location = location,
+            location = locationName,
             currentTemp = "${currentTemp}°C",
             minTemp = "${minTemp}°C",
             maxTemp = "${maxTemp}°C",
-            skyCondition = parseSkyCondition(currentData["SKY"] ?: "1"),
-            rainProbability = "${currentData["POP"] ?: "0"}%",
-            humidity = "${currentData["REH"] ?: "0"}%",
-            windSpeed = "${currentData["WSD"] ?: "0"}m/s",
+            skyCondition = current.condition?.text ?: "알 수 없음",
+            rainProbability = "${forecast.day?.dailyChanceOfRain ?: 0}%",
+            humidity = "${current.humidity ?: 0}%",
+            windSpeed = "${current.windKph?.div(3.6)?.let { "%.1f".format(it) } ?: "0.0"}m/s", // km/h를 m/s로 변환
             hourlyForecasts = hourlyForecasts,
             clothingAdvice = getClothingAdvice(currentTemp, maxTemp, minTemp)
         )
     }
 
     /**
-     * 하늘 상태 파싱
+     * 위치명 구성
      */
-    private fun parseSkyCondition(code: String): String {
-        return when (code) {
-            "1" -> "맑음"
-            "3" -> "구름많음"
-            "4" -> "흐림"
-            else -> "알 수 없음"
-        }
+    private fun buildLocationName(location: WeatherApiResponse.Location): String {
+        return buildString {
+            location.name?.let { append(it) }
+            if (location.region != null && location.region != location.name) {
+                if (isNotEmpty()) append(", ")
+                append(location.region)
+            }
+        }.ifEmpty { "알 수 없는 위치" }
     }
 
     /**
@@ -164,70 +130,5 @@ class WeatherService(
                 advice
             }
         }
-    }
-
-    /**
-     * 발표 시각 계산 (기상청 API 특성상 필요)
-     */
-    private fun getBaseDateTime(now: LocalDateTime): Pair<String, String> {
-        val baseHours = listOf("0200", "0500", "0800", "1100", "1400", "1700", "2000", "2300")
-        val currentHour = now.hour
-        val currentMinute = now.minute
-
-        // 현재 시각 기준으로 가장 최근 발표 시각 찾기
-        val baseTime = baseHours.findLast {
-            val hour = it.substring(0, 2).toInt()
-            currentHour > hour || (currentHour == hour && currentMinute >= 10)
-        } ?: "2300"
-
-        // 어제 23시 발표인 경우
-        val baseDate = if (baseTime == "2300" && currentHour < 2) {
-            now.minusDays(1).format(DateTimeFormatter.ofPattern("yyyyMMdd"))
-        } else {
-            now.format(DateTimeFormatter.ofPattern("yyyyMMdd"))
-        }
-
-        return Pair(baseDate, baseTime)
-    }
-
-    /**
-     * 위도/경도를 기상청 격자 좌표로 변환
-     * (기상청 격자 변환 공식 적용)
-     */
-    private fun convertToGrid(latitude: Double, longitude: Double): Pair<Int, Int> {
-        val RE = 6371.00877 // 지구 반경(km)
-        val GRID = 5.0 // 격자 간격(km)
-        val SLAT1 = 30.0 // 투영 위도1(degree)
-        val SLAT2 = 60.0 // 투영 위도2(degree)
-        val OLON = 126.0 // 기준점 경도(degree)
-        val OLAT = 38.0 // 기준점 위도(degree)
-        val XO = 43.0 // 기준점 X좌표(GRID)
-        val YO = 136.0 // 기준점 Y좌표(GRID)
-
-        val DEGRAD = Math.PI / 180.0
-        val re = RE / GRID
-        val slat1 = SLAT1 * DEGRAD
-        val slat2 = SLAT2 * DEGRAD
-        val olon = OLON * DEGRAD
-        val olat = OLAT * DEGRAD
-
-        var sn = Math.tan(Math.PI * 0.25 + slat2 * 0.5) / Math.tan(Math.PI * 0.25 + slat1 * 0.5)
-        sn = Math.log(Math.cos(slat1) / Math.cos(slat2)) / Math.log(sn)
-        var sf = Math.tan(Math.PI * 0.25 + slat1 * 0.5)
-        sf = Math.pow(sf, sn) * Math.cos(slat1) / sn
-        var ro = Math.tan(Math.PI * 0.25 + olat * 0.5)
-        ro = re * sf / Math.pow(ro, sn)
-
-        var ra = Math.tan(Math.PI * 0.25 + latitude * DEGRAD * 0.5)
-        ra = re * sf / Math.pow(ra, sn)
-        var theta = longitude * DEGRAD - olon
-        if (theta > Math.PI) theta -= 2.0 * Math.PI
-        if (theta < -Math.PI) theta += 2.0 * Math.PI
-        theta *= sn
-
-        val x = floor(ra * Math.sin(theta) + XO + 0.5).toInt()
-        val y = floor(ro - ra * Math.cos(theta) + YO + 0.5).toInt()
-
-        return Pair(x, y)
     }
 }
