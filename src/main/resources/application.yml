@@ -64,10 +64,9 @@ jwt:
   refresh-expiration: 604800000
 
 weather:
-  kma:
-    base-url: https://apihub.kma.go.kr
-    api-uri: /api/typ02/openApi/VilageFcstInfoService_2.0/getUltraSrtNcst
-    api-key: ${KMA_API_KEY}
+  api:
+    base-url: https://api.weatherapi.com/v1
+    api-key: ${WEATHER_API_KEY}
 
 
 app:
