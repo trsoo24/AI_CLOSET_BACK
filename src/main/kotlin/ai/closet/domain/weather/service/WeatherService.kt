@@ -3,6 +3,7 @@ package ai.closet.domain.weather.service
 import ai.closet.domain.weather.dto.HourlyForecast
 import ai.closet.domain.weather.dto.KmaWeatherResponse
 import ai.closet.domain.weather.dto.WeatherResponse
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.client.WebClient
@@ -16,6 +17,8 @@ class WeatherService(
     @Value("\${weather.kma.base-url}") private val weatherUrl: String,
     @Value("\${weather.kma.api-uri}") private val weatherUri: String
 ) {
+    private val logger = LoggerFactory.getLogger(WeatherService::class.java)
+
     private val webClient: WebClient = WebClient.builder()
         .baseUrl(weatherUrl)
         .build()
@@ -23,14 +26,21 @@ class WeatherService(
      * 위도/경도로 날씨 조회
      */
     fun getWeatherByCoordinates(latitude: Double, longitude: Double): WeatherResponse {
+        logger.info("[Weather] 날씨 조회 시작 | Latitude: {}, Longitude: {}", latitude, longitude)
+
         // 1. 위도/경도를 기상청 격자 좌표로 변환
         val (nx, ny) = convertToGrid(latitude, longitude)
+        logger.debug("[Weather] 격자 좌표 변환 완료 | Lat: {}, Lon: {} -> Grid X: {}, Y: {}", latitude, longitude, nx, ny)
 
         // 2. 기상청 API 호출
         val kmaResponse = fetchWeatherFromKma(nx, ny)
 
         // 3. 응답 데이터 파싱 및 가공
-        return parseWeatherResponse(kmaResponse, "서울특별시") // TODO: 역지오코딩으로 실제 지역명 얻기
+        val response = parseWeatherResponse(kmaResponse, "서울특별시") // TODO: 역지오코딩으로 실제 지역명 얻기
+        logger.info("[Weather] 날씨 조회 완료 | Latitude: {}, Longitude: {}, CurrentTemp: {}",
+            latitude, longitude, response.currentTemp)
+
+        return response
     }
 
     /**
@@ -40,38 +50,58 @@ class WeatherService(
         val now = LocalDateTime.now()
         val baseDateTime = getBaseDateTime(now)
 
-        val response = webClient.get()
-            .uri { uriBuilder ->
-                uriBuilder
-                    .path(weatherUri)
-                    .queryParam("pageNo", 1)
-                    .queryParam("numOfRows", 1000)
-                    .queryParam("dataType", "JSON")
-                    .queryParam("base_date", baseDateTime.first)
-                    .queryParam("base_time", baseDateTime.second)
-                    .queryParam("nx", nx)
-                    .queryParam("ny", ny)
-                    .queryParam("authKey", apiKey)
-                    .build()
-            }
-            .retrieve()
-            .bodyToMono(KmaWeatherResponse::class.java)
-            .block() ?: throw RuntimeException("기상청 API 호출 실패")
+        logger.debug("[Weather API] 기상청 API 호출 | Grid X: {}, Y: {}, BaseDate: {}, BaseTime: {}",
+            nx, ny, baseDateTime.first, baseDateTime.second)
 
-        return response
+        val startTime = System.currentTimeMillis()
+
+        try {
+            val response = webClient.get()
+                .uri { uriBuilder ->
+                    uriBuilder
+                        .path(weatherUri)
+                        .queryParam("pageNo", 1)
+                        .queryParam("numOfRows", 1000)
+                        .queryParam("dataType", "JSON")
+                        .queryParam("base_date", baseDateTime.first)
+                        .queryParam("base_time", baseDateTime.second)
+                        .queryParam("nx", nx)
+                        .queryParam("ny", ny)
+                        .queryParam("authKey", apiKey)
+                        .build()
+                }
+                .retrieve()
+                .bodyToMono(KmaWeatherResponse::class.java)
+                .block() ?: throw RuntimeException("기상청 API 호출 실패")
+
+            val duration = System.currentTimeMillis() - startTime
+            logger.info("[Weather API] 기상청 API 호출 성공 | Duration: {}ms", duration)
+
+            return response
+        } catch (e: Exception) {
+            val duration = System.currentTimeMillis() - startTime
+            logger.error("[Weather API] 기상청 API 호출 실패 | Grid X: {}, Y: {}, Duration: {}ms, Error: {}",
+                nx, ny, duration, e.message, e)
+            throw RuntimeException("기상청 API 호출 실패: ${e.message}", e)
+        }
     }
 
     /**
      * 기상청 응답 데이터 파싱
      */
     private fun parseWeatherResponse(kmaResponse: KmaWeatherResponse, location: String): WeatherResponse {
+        logger.debug("[Weather] 날씨 데이터 파싱 시작 | Location: {}", location)
+
         // null 체크
         val items = kmaResponse.response?.body?.items?.item
             ?: throw RuntimeException("기상청 API 응답 데이터가 올바르지 않습니다.")
 
         if (items.isEmpty()) {
+            logger.warn("[Weather] 날씨 데이터 없음 | Location: {}", location)
             throw RuntimeException("날씨 데이터가 없습니다. 좌표를 확인해주세요.")
         }
+
+        logger.debug("[Weather] 날씨 데이터 파싱 | Items Count: {}", items.size)
 
         // 현재 시간대 데이터 추출
         val now = LocalDateTime.now()
