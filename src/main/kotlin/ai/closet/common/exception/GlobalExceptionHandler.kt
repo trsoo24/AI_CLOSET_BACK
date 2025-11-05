@@ -2,6 +2,7 @@ package ai.closet.common.exception
 
 
 import ai.closet.common.response.ApiResponse
+import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.security.access.AccessDeniedException
@@ -11,8 +12,10 @@ import org.springframework.web.bind.annotation.RestControllerAdvice
 
 @RestControllerAdvice
 class GlobalExceptionHandler {
+    private val logger = LoggerFactory.getLogger(GlobalExceptionHandler::class.java)
     @ExceptionHandler(IllegalArgumentException::class)
     fun handleIllegalArgumentException(e: IllegalArgumentException): ResponseEntity<ApiResponse<Unit>> {
+        logger.warn("[Exception] IllegalArgumentException 발생 | Message: {}", e.message)
         return ResponseEntity
             .status(HttpStatus.BAD_REQUEST)
             .body(ApiResponse.error(e.message ?: "잘못된 요청입니다."))
@@ -20,6 +23,7 @@ class GlobalExceptionHandler {
 
     @ExceptionHandler(AuthenticationException::class)
     fun handleAuthenticationException(e: AuthenticationException): ResponseEntity<ApiResponse<Unit>> {
+        logger.warn("[Exception] AuthenticationException 발생 | Message: {}", e.message)
         return ResponseEntity
             .status(HttpStatus.UNAUTHORIZED)
             .body(ApiResponse.error("인증에 실패했습니다."))
@@ -27,6 +31,7 @@ class GlobalExceptionHandler {
 
     @ExceptionHandler(AccessDeniedException::class)
     fun handleAccessDeniedException(e: AccessDeniedException): ResponseEntity<ApiResponse<Unit>> {
+        logger.warn("[Exception] AccessDeniedException 발생 | Message: {}", e.message)
         return ResponseEntity
             .status(HttpStatus.FORBIDDEN)
             .body(ApiResponse.error("접근 권한이 없습니다."))
@@ -34,6 +39,7 @@ class GlobalExceptionHandler {
 
     @ExceptionHandler(NoSuchElementException::class)
     fun handleNoSuchElementException(e: NoSuchElementException): ResponseEntity<ApiResponse<Unit>> {
+        logger.warn("[Exception] NoSuchElementException 발생 | Message: {}", e.message)
         return ResponseEntity
             .status(HttpStatus.NOT_FOUND)
             .body(ApiResponse.error(e.message ?: "요청한 리소스를 찾을 수 없습니다."))
@@ -41,7 +47,8 @@ class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception::class)
     fun handleException(e: Exception): ResponseEntity<ApiResponse<Unit>> {
-        e.printStackTrace()
+        logger.error("[Exception] 예상치 못한 예외 발생 | Type: {}, Message: {}",
+            e.javaClass.simpleName, e.message, e)
         return ResponseEntity
             .status(HttpStatus.INTERNAL_SERVER_ERROR)
             .body(ApiResponse.error("서버 오류가 발생했습니다."))

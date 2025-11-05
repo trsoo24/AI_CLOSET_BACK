@@ -6,6 +6,7 @@ import ai.closet.domain.wardrobe.entity.Category
 import ai.closet.domain.wardrobe.entity.Season
 import ai.closet.domain.wardrobe.entity.WardrobeItem
 import ai.closet.domain.wardrobe.repository.WardrobeItemRepository
+import org.slf4j.LoggerFactory
 import org.springframework.data.domain.Page
 import org.springframework.data.domain.Pageable
 import org.springframework.stereotype.Service
@@ -17,12 +18,15 @@ class WardrobeItemService(
     private val wardrobeItemRepository: WardrobeItemRepository,
     private val userRepository: UserRepository
 ) {
+    private val logger = LoggerFactory.getLogger(WardrobeItemService::class.java)
 
     /**
      * 옷 등록
      */
     @Transactional
     fun createItem(email: String, request: CreateWardrobeItemRequest): WardrobeItemResponse {
+        logger.info("[Wardrobe Item] 옷 등록 시도 | Email: {}, Name: {}, Category: {}", email, request.name, request.category)
+
         val user = userRepository.findByEmail(email)
             .orElseThrow { IllegalArgumentException("사용자를 찾을 수 없습니다.") }
 
@@ -38,6 +42,7 @@ class WardrobeItemService(
         )
 
         val savedItem = wardrobeItemRepository.save(item)
+        logger.info("[Wardrobe Item] 옷 등록 성공 | Email: {}, ItemID: {}, Category: {}", email, savedItem.id, savedItem.category)
         return WardrobeItemResponse.from(savedItem)
     }
 
@@ -45,11 +50,15 @@ class WardrobeItemService(
      * 내 옷 목록 조회
      */
     fun getMyItems(email: String, pageable: Pageable): Page<WardrobeItemResponse> {
+        logger.debug("[Wardrobe Item] 옷 목록 조회 | Email: {}, Page: {}, Size: {}", email, pageable.pageNumber, pageable.pageSize)
+
         val user = userRepository.findByEmail(email)
             .orElseThrow { IllegalArgumentException("사용자를 찾을 수 없습니다.") }
 
-        return wardrobeItemRepository.findByUser(user, pageable)
-            .map { WardrobeItemResponse.from(it) }
+        val items = wardrobeItemRepository.findByUser(user, pageable)
+        logger.debug("[Wardrobe Item] 옷 목록 조회 완료 | Email: {}, TotalElements: {}", email, items.totalElements)
+
+        return items.map { WardrobeItemResponse.from(it) }
     }
 
     /**
@@ -150,6 +159,8 @@ class WardrobeItemService(
         itemId: Long,
         request: UpdateWardrobeItemRequest
     ): WardrobeItemResponse {
+        logger.info("[Wardrobe Item] 옷 정보 수정 시도 | Email: {}, ItemID: {}", email, itemId)
+
         val user = userRepository.findByEmail(email)
             .orElseThrow { IllegalArgumentException("사용자를 찾을 수 없습니다.") }
 
@@ -164,6 +175,7 @@ class WardrobeItemService(
             description = request.description
         )
 
+        logger.info("[Wardrobe Item] 옷 정보 수정 성공 | Email: {}, ItemID: {}, Name: {}", email, itemId, request.name)
         return WardrobeItemResponse.from(item)
     }
 
@@ -188,14 +200,19 @@ class WardrobeItemService(
      */
     @Transactional
     fun wearItem(email: String, itemId: Long): WardrobeItemResponse {
+        logger.info("[Wardrobe Item] 옷 착용 기록 | Email: {}, ItemID: {}", email, itemId)
+
         val user = userRepository.findByEmail(email)
             .orElseThrow { IllegalArgumentException("사용자를 찾을 수 없습니다.") }
 
         val item = wardrobeItemRepository.findByIdAndUser(itemId, user)
             .orElseThrow { IllegalArgumentException("해당 아이템을 찾을 수 없습니다.") }
 
+        val previousCount = item.wearCount
         item.wear()
 
+        logger.info("[Wardrobe Item] 옷 착용 기록 완료 | Email: {}, ItemID: {}, WearCount: {} -> {}",
+            email, itemId, previousCount, item.wearCount)
         return WardrobeItemResponse.from(item)
     }
 
@@ -204,6 +221,8 @@ class WardrobeItemService(
      */
     @Transactional
     fun deleteItem(email: String, itemId: Long) {
+        logger.info("[Wardrobe Item] 옷 삭제 시도 | Email: {}, ItemID: {}", email, itemId)
+
         val user = userRepository.findByEmail(email)
             .orElseThrow { IllegalArgumentException("사용자를 찾을 수 없습니다.") }
 
@@ -211,6 +230,7 @@ class WardrobeItemService(
             .orElseThrow { IllegalArgumentException("해당 아이템을 찾을 수 없습니다.") }
 
         wardrobeItemRepository.delete(item)
+        logger.info("[Wardrobe Item] 옷 삭제 성공 | Email: {}, ItemID: {}, Name: {}", email, itemId, item.name)
     }
 
     /**
@@ -239,6 +259,8 @@ class WardrobeItemService(
      * 통계 정보
      */
     fun getStatistics(email: String): WardrobeStatisticsResponse {
+        logger.debug("[Wardrobe Item] 통계 정보 조회 | Email: {}", email)
+
         val user = userRepository.findByEmail(email)
             .orElseThrow { IllegalArgumentException("사용자를 찾을 수 없습니다.") }
 
@@ -246,7 +268,7 @@ class WardrobeItemService(
         val categoryCountMap = wardrobeItemRepository.countByUserGroupByCategory(user)
             .associate { it.getCategory() to it.getCount() }
 
-        return WardrobeStatisticsResponse(
+        val response = WardrobeStatisticsResponse(
             totalCount = categoryCountMap.values.sum(),
             topCount = categoryCountMap[Category.TOP] ?: 0L,
             bottomCount = categoryCountMap[Category.BOTTOM] ?: 0L,
@@ -258,5 +280,8 @@ class WardrobeItemService(
             hatCount = categoryCountMap[Category.HAT] ?: 0L,
             etcCount = categoryCountMap[Category.ETC] ?: 0L
         )
+
+        logger.info("[Wardrobe Item] 통계 정보 조회 완료 | Email: {}, TotalCount: {}", email, response.totalCount)
+        return response
     }
 }
